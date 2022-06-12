@@ -1,0 +1,238 @@
+---
+title: "Meningite"
+author: "Abdoulaye"
+date: "01/04/2022"
+output:
+  word_document: default
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = FALSE,
+	message = FALSE,
+	warning = FALSE
+)
+```
+
+#Aticvation des packages
+```{r}
+library(tidyverse)
+library(readxl)
+library(writexl)
+library(ggrepel)
+library(sf)
+library(lme4)  # for mixed models
+library(emmeans)  # for marginal effects
+library(effects)  # for predicted marginal means
+library(gt)
+library("performance") #for model diagnostics
+library("see") #for diagnostic plots
+library(flextable)
+library(MASS)# for Negatif binomial model
+#library(animation)
+#library(gganimate)
+#library(transformr)
+#library(plotly)
+```
+
+********MODELISATION*************
+
+Association facteurs de risques et l’incidence de la méningite (régression logistique multivarié):
+	Sexe
+	Groupe d’âge
+	Profession
+	Niveau scolaire
+	Zone d’habitation (exploitation minière ou pas)
+	
+Nous allons calculer la probabilité de prediction  d'étre un cas confirmé de meningite en fonction du sexe, groupe d'age, profession, niveau scolaire et zone d'habitation en utilisant un modele logistique multivarié.
+Le modele se presente comme suit:
+
+<div class="alert alert-secondary">
+$$
+logit(p(mensuspect_i = 1)) = \beta_{0}1 + \beta_1sexe_i + \beta_2trancheage_i + \beta_3profession_i + \beta_4educ_i + \beta_5zone_i
+$$
+
+Lecture de la liste lineaire
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+LL_meningite_s <- read_excel("C:/Users/sinayokoa/Desktop/WHO/Meningite/R/Base_meningite_banalia.xlsx")
+
+
+#names(LL_meningite_s)
+str(LL_meningite_s$Epi_case) # verifions la structure de la variable epicase
+LL_meningite_s<-LL_meningite_s%>%
+mutate(Epi_case_rec=if_else(Epi_case=="Confirmé","Confirmé","suspect"))%>%
+  mutate(Epi_case_rec=factor(Epi_case_rec,
+levels = c("suspect","Confirmé")))
+
+#Convertissons les autres variables en facteurs
+LL_meningite_s$Sexe <- factor(LL_meningite_s$Sexe)
+LL_meningite_s$Fonction <- factor(LL_meningite_s$Fonction)
+LL_meningite_s$Fonction_rec <- factor(LL_meningite_s$Fonction_rec)
+LL_meningite_s$Tranche_age <- factor(LL_meningite_s$Tranche_age)
+LL_meningite_s$zone_exploitation <- factor(LL_meningite_s$zone_exploitation)
+LL_meningite_s<-LL_meningite_s%>% mutate(zone_exploitation=factor(zone_exploitation,levels = c("miniere","non_miniere")))
+LL_meningite_s$nb_carriere_miniere<- factor(LL_meningite_s$nb_carriere_miniere)
+
+str(LL_meningite_s$zone_exploitation)
+
+```
+Nous n'avons pas le niveau d'education dans les base de données, de meme toutes les aires de santé comportent des carriere miniere, ce qui fait qu'on aura uniquement la modalité miniere pour toute la variable. Nous allons donc enlever cette variable dans le modele car nous devons avoir au minimum les deux modalités. Nous le remplacons par le nombre de carriere (par tranche).
+Nous allons calculer la probabilité de prediction  d'étre un cas confirmé de meningite en fonction du sexe, groupe d'age, profession (fonction) et nombre de carriere (nombre par tranche) en utilisant un modele logistique multivarié.
+
+<div class="alert alert-secondary">
+$$
+logit(p(mensuspect_i = 1)) = \beta_{0}1 + \beta_1sexe_i + \beta_2fonction_i + \beta_3trancheage_i + \beta_4carriereminiere_i
+$$
+
+```{r}
+#Run glm
+glm_men<-glm(Epi_case_rec~1+Sexe+Fonction_rec+Tranche_age+nb_carriere_miniere, data=LL_meningite_s,
+    family=binomial(link = "logit") )
+summary(glm_men)
+```
+Comme nous pouvons le voir les coefficient du modele ne sont pas significatifs car les P.Value ( Pr(>|z|)) sont tous superieurs à 0.05%. Et aussi dans les données, nous avons 20 cas confirmé sur 2447 observations dans la base de saisie soit 0.82% de l'ensemble de l'observation. Cela peut rendre le modele instable à cause du peu d'observation d'une modalité, ce qui fait egalement que la variable expliquée ne varie pas beaucoup.
+Nous pouvons neanmoins verifier la qualité du modele
+
+```{r}
+check_model(glm_men)
+```
+Le graphique ci dessus nous montre qu'il ya une possible multicolinéarité, cela veut dire qu'il ya correlation élévée entre les variables dependantes, cela peut egalement rendre le modele instable.
+Nous pouvons ameliorer le modele en augmentant le nombre d'observation sur les confirmés et aussi voir inclure d'autres variables 
+
+Affichons uniquement les coefficients du modele
+```{r echo=FALSE}
+summary(glm_men)%>%coef()
+#coe<- summary(glm_men)%>%coef()%>%as.data.frame()
+#write_xlsx(coe,"coe.xlsx")
+#coe
+
+```
+
+
+===================================================================
+# -	Survie (Kaplan Meir )
+	Survie : Délai entre le début maladie et consultation (début du traitement), âge, sexe
+-	Durée Moyenne du traitement
+-	Durée moyenne du début de la maladie au début du traitement
+-	Impact de la vaccination réactive : évaluation avant après (ci carré ou li binomiale négative)
+
+#*******************
+Délai entre le début maladie et consultation (début du traitement), âge, sexe
+```{r}
+#Calcule de la variable delai_m_dn
+
+LL_meningite_s$Date_report <-as.Date(LL_meningite_s$Date_report)
+LL_meningite_s$DDM <-as.Date(LL_meningite_s$DDM)
+LL_meningite_s<-LL_meningite_s%>%
+mutate(delai_m_dn=Date_report-DDM)
+  str(LL_meningite_s$delai_m_dn)
+  
+LL_meningite_s$delai_m_dn <-as.numeric(LL_meningite_s$delai_m_dn)
+  summary(LL_meningite_s$delai_m_dn)
+  
+```
+
+
+# Par age
+```{r}
+  delai_age<-LL_meningite_s%>%
+    group_by(Tranche_age)%>%
+    summarise(min=min(delai_m_dn,na.rm=T),median= median(delai_m_dn,na.rm=T),moyenne=mean(delai_m_dn,na.rm=T), max=max(delai_m_dn,na.rm=T))%>% flextable()
+ 
+
+ delai_age 
+```
+
+# Par sexe
+```{r}
+  delai_sexe<-LL_meningite_s%>%
+    group_by(Sexe)%>%
+    summarise(min=min(delai_m_dn,na.rm=T),median= median(delai_m_dn,na.rm=T),moyenne=mean(delai_m_dn,na.rm=T), max=max(delai_m_dn,na.rm=T))
+ 
+ delai_sexe %>% flextable()
+
+```
+
+Nous ne pouvons pas calculer la durée moyenne de traitement car la date de guerison n'a pas été renseigné.
+
+================================================================
+
+-	Impact de la vaccination réactive : évaluation avant après (ci carré ou li binomiale négative)
+
+Creons la variable campagne_vac avec pour modalité avant et apres
+
+```{r}
+LL_meningite_vac<-LL_meningite_s%>%
+mutate(campagne_vac=if_else(Date_report<"2021-10-09","avant_campagne","apres_campagne"))
+
+LL_meningite_vac_2<-LL_meningite_vac%>%
+  group_by(SE_Not,campagne_vac)%>%summarise(cas=n())%>%
+  group_by(campagne_vac)%>%
+  summarise(nb_cas=sum(cas),moyenne=mean(cas), ecart_type=sd(cas), variance=var(cas))
+LL_meningite_vac_2%>%flextable()
+
+```
+
+
+```{r}
+LL_meningite_vac_g<-LL_meningite_vac%>%
+  group_by(SE_Not,campagne_vac)%>%summarise(cas=n())%>%
+ggplot( aes(x=fct_rev(campagne_vac), y=cas,fill=campagne_vac))+geom_bar(stat="identity", show.legend = FALSE)+ labs(title = "Nombre de cas de méningite avant et après la vaccination", x="")+
+  theme(plot.title=element_text(size=11))
+LL_meningite_vac_g
+ 
+```
+
+Boxplot qui reprensente les 5 statistiques (minimum, median, premier/troisieme quartiles et le maximum) pour les données avant et apres campagne en regroupant par SE et aussi en affichant les valeur aberantes
+```{r}
+LL_meningite_vac_3<-LL_meningite_vac%>%
+  group_by(SE_Not,campagne_vac)%>%summarise(cas=n())
+
+ggplot(data=LL_meningite_vac_3, aes(x=fct_rev(campagne_vac), y=cas,fill=campagne_vac))+geom_boxplot()+ labs(title = "Boxplot sur les cas de méningite avant et après la vaccination", x="")+
+  theme(plot.title=element_text(size=11))
+```
+L'analyse du tableau  et des graphiques ci dessus nous montre une dispersion dans les données (nombre de cas par SE). De même on voit que l'ecart type est superieur à la moyenne, dans de telles condition une regression binomiale negative peut être utilisée. Negative binomial regression is for modeling count variables, usually for over-dispersed count outcome variables.
+Nous allons etudier la venue du nombre de cas de meningite en fonction de la vaccination (avant/apres), les décès et le taux de letalité
+
+```{r}
+ LL_meningite_vac_m<-LL_meningite_vac%>% mutate(deces=if_else(Statut=="Décès",1,0))%>%
+  group_by(SE_Not,campagne_vac)%>%summarise(cas=n(),deces_rec=sum(deces),
+  letalite=round((deces_rec/cas*100),digit=1))%>%
+  mutate(campagne_vac_rec=if_else(campagne_vac=="avant_campagne",1,2))
+  
+LL_meningite_vac_m$campagne_vac<-as.factor(LL_meningite_vac_m$campagne_vac)
+levels(LL_meningite_vac_m$campagne_vac)
+
+
+ LL_meningite_vac_m$campagne_vac_rec <- factor(LL_meningite_vac_m$campagne_vac_rec, levels = 1:2, labels = c("avant_campagne", "apres_campagne"))
+
+ggplot(data=LL_meningite_vac_m, aes(cas, fill=campagne_vac))+geom_histogram()+facet_grid(vars(campagne_vac),margin=T)
+```
+
+Effectuons le modele avec pour variable explicative le nombre de décès, la periode de la campagne avant/apres et la letalité
+```{r}
+men_model_bin1<-glm.nb(formula=cas~campagne_vac_rec+deces_rec+letalite, data=LL_meningite_vac_m)
+summary(men_model_bin1)
+
+```
+Nous voyons que les coefficients sont significatives pour intercept, deces et letalité
+
+Le modele binomial negatif a la meme forme que le modele de poisson et se presente comme suit d'apres les resultats ci dessus:
+
+log(cas)=Intercept+b1(campagne_vac_rec=apres_camapagne)+b2(deces_rec)
+
+
+
+Nous pouvons afficher les moyennes marginales estimées du modele, cela represente le resultat du modele  un certain niveau des variables explicatives
+```{r}
+men_model_bin1%>%
+allEffects() %>%
+      plot(type = "response")
+```
+
+
+
+
+
